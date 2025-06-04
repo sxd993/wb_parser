@@ -26,7 +26,6 @@ async def fetch_url(session, url):
     """Асинхронное выполнение GET-запроса."""
     try:
         async with session.get(url, headers=get_headers(), timeout=5) as response:
-            logger.debug(f"Запрос к {url}, статус: {response.status}, Content-Type: {response.headers.get('Content-Type')}")
             if response.status != 200:
                 logger.error(f"HTTP ошибка при запросе {url}: {response.status}")
                 return None
@@ -49,93 +48,92 @@ async def fetch_url(session, url):
         logger.error(f"Неизвестная ошибка при запросе {url}: {str(e)}")
         return None
 
-async def get_all_products(query, max_pages=50):
+async def get_all_products(query, max_products=1000):
     """Асинхронное получение всех товаров по запросу через API с пагинацией."""
     encoded_query = quote(query)
     base_url = f"https://search.wb.ru/exactmatch/ru/common/v13/search?ab_testing=false&appType=1&curr=rub&dest=-1255987&hide_dtype=13&lang=ru&query={encoded_query}&resultset=catalog&sort=popular&spp=30&suppressSpellcheck=false"
     all_products = []
+    page = 1
     
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=10)) as session:
-        tasks = []
-        for page in range(1, min(max_pages + 1, 101)):
-            url = f"{base_url}&page={page}"
-            tasks.append(fetch_url(session, url))
-        
-        for page, result in enumerate(tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Парсинг страниц")):
-            data = await result
-            if not data:
-                logger.info(f"Нет данных на странице {page + 1}. Продолжаем...")
-                continue
-            products = data.get("data", {}).get("products", [])
-            if not products:
-                logger.info(f"Нет продуктов на странице {page + 1}. Завершение пагинации.")
-                break
-            logger.debug(f"Получено {len(products)} товаров на странице {page + 1}")
-            for p in products:
-                price = {
-                    "basic": None,
-                    "product": None,
-                    "total": None,
-                }
-                if p.get("price"):
-                    price_data = p.get("price", {})
+    with tqdm(total=max_products, desc="Получение данных о товарах") as pbar:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=10)) as session:
+            while len(all_products) < max_products:
+                url = f"{base_url}&page={page}"
+                data = await fetch_url(session, url)
+                if not data:
+                    break
+                products = data.get("data", {}).get("products", [])
+                if not products:
+                    break
+                for p in products:
+                    if len(all_products) >= max_products:
+                        break
                     price = {
-                        "product": (
-                            price_data.get("product", 0) / 100
-                            if price_data.get("product")
-                            else None
-                        ),
+                        "basic": None,
+                        "product": None,
+                        "total": None,
                     }
-                elif p.get("sizes"):
-                    for size in p.get("sizes", []):
-                        if size.get("price"):
-                            price_data = size["price"]
-                            price = {
-                                "basic": (
-                                    price_data.get("basic", 0) / 100
-                                    if price_data.get("basic")
-                                    else None
-                                ),
-                                "product": (
-                                    price_data.get("product", 0) / 100
-                                    if price_data.get("product")
-                                    else None
-                                ),
-                                "total": (
-                                    price_data.get("total", 0) / 100
-                                    if price_data.get("total")
-                                    else None
-                                ),
-                            }
-                            break
-                if not price["product"]:
-                    logger.warning(f"price.product отсутствует для товара {p.get('id', 'unknown')}")
-                all_products.append(
-                    {
-                        "id": p["id"],
-                        "name": p["name"],
-                        "brand": p.get("brand", "Неизвестный бренд"),
-                        "url": f"https://www.wildberries.ru/catalog/{p['id']}/detail.aspx",
-                        "price": price,
-                        "article": p.get("id"),
-                        "feedbacks": p.get("feedbacks", 0),
-                        "rating": p.get("reviewRating", 0),
-                        "supplier": p.get("supplier", "Неизвестный продавец"),
-                        "supplierId": p.get("supplierId", 0),
-                        "supplierRating": p.get("supplierRating", 0),
-                    }
-                )
-            logger.info(f"Обработана страница {page + 1}, собрано товаров: {len(all_products)}")
-            await asyncio.sleep(0.1)  # Задержка для избежания блокировки
+                    if p.get("price"):
+                        price_data = p.get("price", {})
+                        price = {
+                            "product": (
+                                price_data.get("product", 0) / 100
+                                if price_data.get("product")
+                                else None
+                            ),
+                        }
+                    elif p.get("sizes"):
+                        for size in p.get("sizes", []):
+                            if size.get("price"):
+                                price_data = size["price"]
+                                price = {
+                                    "basic": (
+                                        price_data.get("basic", 0) / 100
+                                        if price_data.get("basic")
+                                        else None
+                                    ),
+                                    "product": (
+                                        price_data.get("product", 0) / 100
+                                        if price_data.get("product")
+                                        else None
+                                    ),
+                                    "total": (
+                                        price_data.get("total", 0) / 100
+                                        if price_data.get("total")
+                                        else None
+                                    ),
+                                }
+                                break
+                    if not price["product"]:
+                        logger.warning(f"price.product отсутствует для товара {p.get('id', 'unknown')}")
+                    all_products.append(
+                        {
+                            "id": p["id"],
+                            "name": p["name"],
+                            "brand": p.get("brand", "Неизвестный бренд"),
+                            "url": f"https://www.wildberries.ru/catalog/{p['id']}/detail.aspx",
+                            "price": price,
+                            "article": p.get("id"),
+                            "feedbacks": p.get("feedbacks", 0),
+                            "rating": p.get("reviewRating", 0),
+                            "supplier": p.get("supplier", "Неизвестный продавец"),
+                            "supplierId": p.get("supplierId", 0),
+                            "supplierRating": p.get("supplierRating", 0),
+                        }
+                    )
+                    pbar.update(1)  # Обновляем прогресс-бар для каждого товара
+                page += 1
+                await asyncio.sleep(0.1)  # Задержка для избежания блокировки
     return all_products
 
 # Кэш для данных продавцов
 sellers_cache = {}
 
-async def get_supplier_info(supplier_id):
+async def get_supplier_info(supplier_id, pbar=None):
     """Асинхронное получение информации о продавце по ID через новый API."""
     if supplier_id in sellers_cache:
-        logger.debug(f"Используется кэш для продавца {supplier_id}")
+        if pbar:
+            pbar.update(1)
         return sellers_cache[supplier_id]
     
     url = f"https://static-basket-01.wb.ru/vol0/data/supplier-by-id/{supplier_id}.json"
@@ -159,7 +157,6 @@ async def get_supplier_info(supplier_id):
                 "supplierUrl": f"https://www.wildberries.ru/seller/{supplier_id}",
             }
             sellers_cache[supplier_id] = supplier_data
-            logger.info(f"Успешно получены данные о продавце {supplier_id}: {supplier_data['supplierFullName']}")
         else:
             supplier_data = {
                 "supplierId": supplier_id,
@@ -178,4 +175,6 @@ async def get_supplier_info(supplier_id):
                 "supplierUrl": f"https://www.wildberries.ru/seller/{supplier_id}",
             }
             sellers_cache[supplier_id] = supplier_data
+        if pbar:
+            pbar.update(1)
         return supplier_data
