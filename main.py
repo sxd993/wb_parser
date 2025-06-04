@@ -1,17 +1,16 @@
-import time
-import random
-from utils.api import get_all_products
-from utils.file_utils import save_to_json
+import asyncio
+from tqdm import tqdm
+from utils.api import get_all_products, get_supplier_info
 from utils.excel_creator import save_to_excel
 from loghandler import logger
 from collections import defaultdict
 
-def main(query, output_file="wildberries_products.json", products_per_brand=100, max_pages=5, max_products=500):
+async def main(query, output_file="wildberries_products.xlsx", products_per_brand=100, max_pages=5, max_products=500):
     """Основная функция парсера."""
     try:
         # Получение всех товаров
         logger.info("Получение всех товаров...")
-        products = get_all_products(query, max_pages=max_pages)
+        products = await get_all_products(query, max_pages=max_pages)
         
         # Ограничение общего количества товаров
         products = products[:max_products]
@@ -36,13 +35,18 @@ def main(query, output_file="wildberries_products.json", products_per_brand=100,
         for brand in sorted(grouped.keys()):  # Сортировка брендов по алфавиту
             sorted_products.extend(grouped[brand])
     
-        # Сохранение результатов в JSON
-        save_to_json(sorted_products, output_file)
-        logger.info(f"Данные сохранены в {output_file}")
+        # Получение уникальных ID продавцов
+        supplier_ids = sorted(set(product['supplierId'] for product in sorted_products if product['supplierId']))
+        logger.info(f"Найдено {len(supplier_ids)} уникальных продавцов")
+        
+        # Получение информации о продавцах
+        supplier_data = []
+        for supplier_id in tqdm(supplier_ids, desc="Получение данных о продавцах"):
+            supplier_info = await get_supplier_info(supplier_id)
+            supplier_data.append(supplier_info)
     
         # Сохранение результатов в Excel
-        excel_output_file = output_file.replace('.json', '.xlsx')
-        save_to_excel(sorted_products, excel_output_file)
+        save_to_excel(sorted_products, supplier_data, output_file)
     
     except Exception as e:
         logger.error(f"Ошибка в основной функции: {str(e)}")
@@ -50,4 +54,4 @@ def main(query, output_file="wildberries_products.json", products_per_brand=100,
 
 if __name__ == "__main__":
     query = "латунный кран"
-    main(query)
+    asyncio.run(main(query))
