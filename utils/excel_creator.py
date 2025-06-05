@@ -1,11 +1,10 @@
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from loghandler import logger
 
 
 def save_to_excel(data, supplier_data, output_file):
-    """Сохранение данных в Excel файл с отдельными столбцами для всех полей и данными о продавцах."""
+    """Сохранение данных в Excel файл, объединяя товары и информацию о продавцах в одном листе."""
     try:
         # Преобразуем данные о товарах в список словарей с плоской структурой
         flat_data = []
@@ -29,81 +28,48 @@ def save_to_excel(data, supplier_data, output_file):
         # Создаем DataFrame для товаров
         df = pd.DataFrame(flat_data)
 
-        # Создаем DataFrame для продавцов
+        # Преобразуем данные о продавцах в DataFrame
         flat_supplier_data = [
             {
                 "ID продавца": supplier["supplierId"],
                 "Название продавца": supplier["supplierName"],
                 "Полное юридическое название": supplier["supplierFullName"],
                 "ИНН": supplier["inn"],
-                "ОГРН": supplier["ogrn"],  # Добавляем ОГРН
+                "ОГРН": supplier["ogrn"],
                 "ОГРНИП": supplier["ogrnip"],
-                "Юридический адрес": supplier[
-                    "legalAddress"
-                ],  # Добавляем юридический адрес
+                "Юридический адрес": supplier["legalAddress"],
                 "Торговая марка": supplier["trademark"],
-                "КПП": supplier["kpp"],  # Добавляем КПП
-                "Номер регистрации": supplier[
-                    "taxpayerCode"
-                ],  # Добавляем номер регистрации
-                "УНП": supplier["unp"],  # Добавляем УНП
-                "БИН": supplier["bin"],  # Добавляем БИН
-                "УНН": supplier["unn"],  # Добавляем УНН
+                "КПП": supplier["kpp"],
+                "Номер регистрации": supplier["taxpayerCode"],
+                "УНП": supplier["unp"],
+                "БИН": supplier["bin"],
+                "УНН": supplier["unn"],
                 "Ссылка на продавца": supplier["supplierUrl"],
             }
             for supplier in supplier_data
         ]
         supplier_df = pd.DataFrame(flat_supplier_data)
 
-        # Сохраняем в Excel с несколькими листами
+        # Объединяем данные о товарах и продавцах по ID продавца (left join)
+        merged_df = pd.merge(
+            df, supplier_df, on="ID продавца", how="left", suffixes=("", "_продавец")
+        )
+
+        # Сохраняем в Excel в один лист
         with pd.ExcelWriter(output_file, engine="openpyxl", mode="w") as writer:
-            df.to_excel(writer, sheet_name="Товары", index=False)
-            supplier_df.to_excel(writer, sheet_name="Продавцы", index=False)
+            merged_df.to_excel(writer, sheet_name="Товары и продавцы", index=False)
 
         # Открываем Excel-файл для настройки ширины столбцов
         workbook = load_workbook(output_file)
+        worksheet = workbook["Товары и продавцы"]
 
-        # Настройка ширины столбцов для листа Товары
-        worksheet = workbook["Товары"]
+        # Настройка ширины столбцов
         columns_to_widen_one = [
             "Артикул",
             "Бренд",
             "Обычная цена",
             "Цена по ВБ Карте",
             "Цена без ВБ Карты",
-        ]
-        columns_to_widen_two = ["Поставщик(продавец)"]
-        columns_to_widen_three = ["Название", "URL"]
-        default_width = 8.43  # Стандартная ширина столбца в openpyxl
-        first_width = float(default_width * 1.3)  # Увеличиваем ширину в 1.3 раза
-        second_width = float(default_width * 3)  # Увеличиваем ширину в 3 раза
-        third_width = float(default_width * 6)  # Увеличиваем ширину в 6 раз
-
-        logger.debug(
-            f"1st_width: {first_width}, 2nd_width: {second_width}, 3rd_width: {third_width}"
-        )
-
-        for col_idx, col_name in enumerate(df.columns, start=1):
-            column_letter = get_column_letter(col_idx)
-            if col_name in columns_to_widen_one:
-                worksheet.column_dimensions[column_letter].width = first_width
-                logger.debug(
-                    f"Установлена ширина {first_width} для столбца {col_name} ({column_letter})"
-                )
-            elif col_name in columns_to_widen_two:
-                worksheet.column_dimensions[column_letter].width = second_width
-                logger.debug(
-                    f"Установлена ширина {second_width} для столбца {col_name} ({column_letter})"
-                )
-            elif col_name in columns_to_widen_three:
-                worksheet.column_dimensions[column_letter].width = third_width
-                logger.debug(
-                    f"Установлена ширина {third_width} для столбца {col_name} ({column_letter})"
-                )
-
-        # Настройка ширины столбцов для листа Продавец
-        supplier_worksheet = workbook["Продавцы"]
-        supplier_columns_to_widen_one = [
             "ID продавца",
             "ИНН",
             "ОГРН",
@@ -114,34 +80,35 @@ def save_to_excel(data, supplier_data, output_file):
             "БИН",
             "УНН",
         ]
-        supplier_columns_to_widen_two = ["Название продавца", "Торговая марка"]
-        supplier_columns_to_widen_three = [
+        columns_to_widen_two = [
+            "Поставщик(продавец)",
+            "Название продавца",
+            "Торговая марка",
+        ]
+        columns_to_widen_three = [
+            "Название",
+            "URL",
             "Полное юридическое название",
             "Юридический адрес",
             "Ссылка на продавца",
         ]
-        for col_idx, col_name in enumerate(supplier_df.columns, start=1):
+        default_width = 8.43  # Стандартная ширина столбца в openpyxl
+        first_width = float(default_width * 1.3)  # Увеличиваем ширину в 1.3 раза
+        second_width = float(default_width * 3)  # Увеличиваем ширину в 3 раза
+        third_width = float(default_width * 6)  # Увеличиваем ширину в 6 раз
+
+        for col_idx, col_name in enumerate(merged_df.columns, start=1):
             column_letter = get_column_letter(col_idx)
-            if col_name in supplier_columns_to_widen_one:
-                supplier_worksheet.column_dimensions[column_letter].width = first_width
-                logger.debug(
-                    f"Установлена ширина {first_width} для столбца {col_name} ({column_letter}) в листе Suppliers"
-                )
-            elif col_name in supplier_columns_to_widen_two:
-                supplier_worksheet.column_dimensions[column_letter].width = second_width
-                logger.debug(
-                    f"Установлена ширина {second_width} для столбца {col_name} ({column_letter}) в листе Suppliers"
-                )
-            elif col_name in supplier_columns_to_widen_three:
-                supplier_worksheet.column_dimensions[column_letter].width = third_width
-                logger.debug(
-                    f"Установлена ширина {third_width} для столбца {col_name} ({column_letter}) в листе Suppliers"
-                )
+            if col_name in columns_to_widen_one:
+                worksheet.column_dimensions[column_letter].width = first_width
+            elif col_name in columns_to_widen_two:
+                worksheet.column_dimensions[column_letter].width = second_width
+            elif col_name in columns_to_widen_three:
+                worksheet.column_dimensions[column_letter].width = third_width
 
         # Сохраняем изменения
         workbook.save(output_file)
-        logger.info(f"Excel файл успешно создан: {output_file}")
+        print(f"Создан файл {output_file}")
 
     except Exception as e:
-        logger.error(f"Ошибка при записи Excel файла {output_file}: {str(e)}")
-        raise
+        raise Exception(f"Ошибка при записи Excel файла {output_file}: {str(e)}")

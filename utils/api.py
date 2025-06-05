@@ -3,8 +3,6 @@ import asyncio
 import json
 from urllib.parse import quote
 import random
-from tqdm import tqdm
-from loghandler import logger
 
 # Список User-Agent для ротации
 user_agents = [
@@ -13,7 +11,6 @@ user_agents = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
 ]
-
 
 def get_headers():
     """Возвращает заголовки с случайным User-Agent."""
@@ -26,127 +23,84 @@ def get_headers():
         "Referer": "https://www.wildberries.ru/",
     }
 
-
 async def fetch_url(session, url):
     """Асинхронное выполнение GET-запроса."""
     try:
         async with session.get(url, headers=get_headers(), timeout=10) as response:
             if response.status != 200:
-                logger.error(f"HTTP ошибка при запросе {url}: {response.status}")
+                print(f"Status code: {response.status}")
                 return None
             text = await response.text()
             if not text:
-                logger.warning(f"Пустой ответ от {url}")
+                print("Empty response")
                 return None
             try:
                 data = json.loads(text)
                 return data
             except json.JSONDecodeError as e:
-                logger.error(
-                    f"Ошибка декодирования JSON от {url}: {str(e)}. Текст ответа: {text[:500]}..."
-                )
+                print(f"JSONDecodeError: {e} - Raw response: {text[:500]}")
                 return None
     except aiohttp.ClientError as e:
-        logger.error(f"Ошибка сети при запросе {url}: {str(e)}")
+        print(f"ClientError: {e}")
         return None
     except Exception as e:
-        logger.error(f"Неизвестная ошибка при запросе {url}: {str(e)}")
-        return None
+        print(f"Неизвестная ошибка при запросе {url}: {e}")
+        raise
 
+async def get_total_products(query):
+    """Получение общего количества доступных товаров по запросу."""
+    encoded_query = quote(query)
+    url = f"https://search.wb.ru/exactmatch/ru/common/v13/search?ab_testing=false&appType=1&curr=rub&dest=-1255987&hide_dtype=13&lang=ru&query={encoded_query}&resultset=filters&spp=30&suppressSpellcheck=false&uclusters=2"
+    async with aiohttp.ClientSession() as session:
+        data = await fetch_url(session, url)
+        if data and isinstance(data, dict) and "data" in data and isinstance(data["data"], dict) and "total" in data["data"]:
+            return data["data"]["total"]
+        elif data:
+            print(f"Unexpected data structure: {data}")
+        else:
+            print("No data returned from API")
+        return 0
 
-async def get_brand_ids(query, max_pages=60):
+async def get_brand_ids(query):
     """Получение всех brand ID из каталога товаров по запросу."""
     encoded_query = quote(query)
     brand_ids = set()
     page = 1
 
     async with aiohttp.ClientSession() as session:
-        while page <= max_pages:
+        while True:
             url = f"https://search.wb.ru/exactmatch/ru/common/v13/search?ab_testing=false&appType=1&curr=rub&dest=-1255987&hide_dtype=13&lang=ru&query={encoded_query}&resultset=catalog&sort=popular&spp=30&suppressSpellcheck=false&page={page}"
             data = await fetch_url(session, url)
             if not data or "data" not in data or "products" not in data["data"]:
-                logger.warning(
-                    f"Нет данных о товарах на странице {page} для запроса {query}"
-                )
                 break
             products = data["data"]["products"]
             if not products:
-                logger.info(
-                    f"Товары закончились на странице {page} для запроса {query}"
-                )
                 break
             for product in products:
                 brand_id = product.get("brandId")
                 if brand_id:
                     brand_ids.add(brand_id)
-            logger.info(
-                f"Найдено {len(products)} товаров и {len(brand_ids)} уникальных брендов на странице {page}"
-            )
             page += 1
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)  # Уменьшенная задержка
+    return list(brand_ids)
 
-    brand_ids = list(brand_ids)
-    if not brand_ids:
-        logger.warning(f"Итоговый список brand IDs пуст для запроса {query}")
-    else:
-        logger.info(f"Всего найдено {len(brand_ids)} брендов для запроса {query}")
-    return brand_ids
-
-
-async def get_all_products(query, max_products=10000, max_pages_per_brand=100):
-    """Асинхронное получение всех товаров по запросу через API для всех brand ID."""
-    brand_ids = await get_brand_ids(query)
-    if not brand_ids:
-        logger.error(
-            f"Не удалось получить brand IDs для запроса {query}. Прекращаем выполнение."
-        )
-        return []
-
-    all_products = []
-    # Создаем прогресс-бар с общим количеством товаров
-    with tqdm(total=max_products, desc="Обработка товаров") as pbar:
-        for brand_id in brand_ids:
-            if len(all_products) >= max_products:
-                break
-            products = await get_products_by_brand(
-                query,
-                brand_id,
-                max_products - len(all_products),
-                max_pages_per_brand,
-                pbar,
-            )
-            all_products.extend(products)
-            logger.info(
-                f"Обработан бренд {brand_id}, собрано {len(products)} товаров, всего: {len(all_products)}"
-            )
-
-    logger.info(f"Всего собрано {len(all_products)} товаров для запроса {query}")
-    return all_products[:max_products]
-
-
-async def get_products_by_brand(
-    query, brand_id, max_products_per_brand, max_pages, pbar=None
-):
+async def get_products_by_brand(query, brand_id, max_products_per_brand, progress_handler=None):
     """Получение товаров для конкретного brand ID."""
     encoded_query = quote(query)
-    base_url = f"https://search.wb.ru/exactmatch/ru/common/v13/search?ab_testing=false&appType=1&curr=rub&dest=-1581689&fbrand={brand_id}&hide_dtype=13&lang=ru&page=1&q1={encoded_query}&query={encoded_query}&resultset=catalog&sort=popular&spp=30&suppressSpellcheck=false&uclusters=2&uiv=0&uv=AQIAAQIDAAoACcgxQ948xkLCQ1W8GUVxwoK6aDz-v2PEtbzJOeG4C7iXOzZBfcNyPkREqcHqQVfEw0Lgu2NAbMpZxOa4G8OiwbzIE0HSu-M85MM-wVG-JDWqxUlIRcLIQtY16L-tSC1FVL54RlNFQsFoR8BBCjoAQHs35LzkPZFBOjwVxKrCh7-GREVGTMYtRcVGXzuVSzi8_cXCLHzEUjblQGY4eEnPQhbBB8GuOs3EEDFnPXLCjr0jPLhF4r_suY851kE7xrvGgTFFvJlDRjcJRZJE0Mchxsk2Ux0qwHDA7sFBQZM4VEQ7vBxIBD35Ph9DCr56xITGQj2zOtzIgjQbNqk_28cTPWYxVS1VNqsxVTFV"
+    base_url = f"https://search.wb.ru/exactmatch/ru/common/v13/search?ab_testing=false&appType=1&curr=rub&dest=-1581689&fbrand={brand_id}&hide_dtype=13&lang=ru&page=1&q1={encoded_query}&query={encoded_query}&resultset=catalog&sort=popular&spp=30&suppressSpellcheck=false&uclusters=2&uiv=0&uv=AQIAAQIDAAoACcgxQ948xkLCQ1W8GUVxwoK6aDz-v2PEtbzJOeG4C7iXOzZBfcNyPkREqcHqQVfEw0Lgu2NAbMpZxOa4G8OiwbzIE0HSHSu-M85MM-wVG-JDWqxUlIRcLIQtY16L-tSC1FVL54RlNFQsFoR8BBCjoAQHs35LzkPZFBOjwVxKrCh7-GREVGTMYtRcVGXzuVSzi8_cXCLHzEUjblQGY4eEnPQhbBB8GuOs3EEDFnPXLCjr0jPLhF4r_suY851kE7xrvGgTFFvJlDRjcJRZJE0Mchxsk2Ux0qwHDA7sFBQZM4VEQ7vBxIBD35Ph9DCr56xITGQj2zOtzIgjQbNqk_28cTPWYxVS1VNqsxVTFV"
     products = []
     page = 1
 
     async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(limit=10)
+        connector=aiohttp.TCPConnector(limit=50)  # Увеличен лимит соединений
     ) as session:
-        while len(products) < max_products_per_brand and page <= max_pages:
+        while len(products) < max_products_per_brand:
             url = base_url.replace("page=1", f"page={page}")
             data = await fetch_url(session, url)
             if not data:
-                logger.warning(f"Нет данных для brand ID {brand_id} на странице {page}")
                 break
             product_data = data.get("data", {}).get("products", [])
             if not product_data:
-                logger.info(
-                    f"Товары закончились для brand ID {brand_id} на странице {page}"
-                )
                 break
             for p in product_data:
                 if len(products) >= max_products_per_brand:
@@ -187,10 +141,6 @@ async def get_products_by_brand(
                                 ),
                             }
                             break
-                if not price["product"]:
-                    logger.warning(
-                        f"price.product отсутствует для товара {p.get('id', 'unknown')}"
-                    )
                 products.append(
                     {
                         "id": p["id"],
@@ -206,25 +156,51 @@ async def get_products_by_brand(
                         "supplierRating": p.get("supplierRating", 0),
                     }
                 )
-                if pbar:
-                    pbar.update(1)  # Обновляем общий прогресс-бар
+                if progress_handler:
+                    progress_handler.update(1)
             page += 1
-            await asyncio.sleep(0.1)  # Задержка для избежания блокировки API
-    logger.info(
-        f"Собрано {len(products)} товаров для бренда {brand_id} за {page-1} страниц"
-    )
+            await asyncio.sleep(0.05)  # Уменьшенная задержка
     return products
 
+async def get_all_products(query, max_products, progress_handler=None):
+    """Асинхронное получение всех товаров по запросу через API для всех brand ID."""
+    brand_ids = await get_brand_ids(query)
+    if not brand_ids:
+        return []
+
+    all_products = []
+    if progress_handler:
+        progress_handler.set_total(max_products)
+
+    # Распараллеливаем запросы для всех brand_id
+    async def fetch_products_for_brand(brand_id):
+        return await get_products_by_brand(
+            query,
+            brand_id,
+            max_products - len(all_products),
+            progress_handler
+        )
+
+    # Выполняем запросы параллельно
+    tasks = [fetch_products_for_brand(brand_id) for brand_id in brand_ids]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in results:
+        if not isinstance(result, Exception):
+            all_products.extend(result)
+        if len(all_products) >= max_products:
+            break
+
+    return all_products[:max_products]
 
 # Кэш для данных продавцов
 sellers_cache = {}
 
-
-async def get_supplier_info(supplier_id, pbar=None):
+async def get_supplier_info(supplier_id, progress_handler=None):
     """Асинхронное получение информации о продавце по ID через новый API."""
     if supplier_id in sellers_cache:
-        if pbar:
-            pbar.update(1)
+        if progress_handler:
+            progress_handler.update(1)
         return sellers_cache[supplier_id]
 
     url = f"https://static-basket-01.wb.ru/vol0/data/supplier-by-id/{supplier_id}.json"
@@ -266,6 +242,6 @@ async def get_supplier_info(supplier_id, pbar=None):
                 "supplierUrl": f"https://www.wildberries.ru/seller/{supplier_id}",
             }
             sellers_cache[supplier_id] = supplier_data
-        if pbar:
-            pbar.update(1)
+        if progress_handler:
+            progress_handler.update(1)
         return supplier_data

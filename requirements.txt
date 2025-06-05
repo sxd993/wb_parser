@@ -3,3 +3,5 @@ pandas
 openpyxl
 tqdm
 aiohttp
+PyQt5
+qasync
