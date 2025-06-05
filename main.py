@@ -34,4 +34,4 @@ async def main(query, output_file="wildberries_products.xlsx", max_products=1000
 
 if __name__ == "__main__":
     query = "латунный кран"
-    asyncio.run(main(query, max_products=100))
+    asyncio.run(main(query, max_products=7000))
